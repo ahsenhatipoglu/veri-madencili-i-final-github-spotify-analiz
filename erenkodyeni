@@ -1,0 +1,146 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV, train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from xgboost import XGBClassifier
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, classification_report
+from torch.utils.data import DataLoader, TensorDataset
+import warnings
+
+warnings.filterwarnings('ignore') # Gereksiz uyarıları kapat
+
+print("--- ALİ EREN: Final Proje Kodu Çalışıyor ---")
+
+# 1. VERİ YÜKLEME VE ÖN İŞLEME
+try:
+    df = pd.read_csv('dataset.csv')
+except:
+    df = pd.read_csv('tracks.csv')
+
+# Hedef Değişken
+df['is_hit'] = np.where(df['popularity'] > 50, 1, 0)
+df = df.drop(columns=['popularity']).select_dtypes(include=[np.number]).dropna()
+
+# --- GÖRSEL 1: SINIF DAĞILIMI (PIE CHART - Hoca İsteği) ---
+plt.figure(figsize=(6, 6))
+df['is_hit'].value_counts().plot.pie(autopct='%1.1f%%', labels=['Flop (0)', 'Hit (1)'], colors=['skyblue', 'orange'])
+plt.title("Veri Seti Sınıf Dağılımı (Ali Eren)")
+plt.ylabel("")
+plt.show()
+
+X = df.drop(columns=['is_hit']).values
+y = df['is_hit'].values
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Train-Test Split (Stratified)
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, stratify=y, random_state=42)
+
+# 2. PYTORCH MODELLERİ (ZORUNLU KISIM)
+# Model 1: Basit Derin Ağ
+class SimpleDNN(nn.Module):
+    def __init__(self, in_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 100), 
+            nn.ReLU(), 
+            nn.Linear(100, 1), 
+            nn.Sigmoid()
+        )
+    def forward(self, x): return self.net(x)
+
+# Model 2: Residual (Artık) Bağlantılı Ağ (Gelişmiş Mimari)
+class ResidualDNN(nn.Module):
+    def __init__(self, in_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, 1)
+        self.dropout = nn.Dropout(0.2)
+    def forward(self, x):
+        x1 = torch.relu(self.fc1(x))
+        x2 = self.fc2(x1)
+        x = torch.relu(x1 + x2) # Residual Connection (Önemli Özellik)
+        x = self.dropout(x)
+        return torch.sigmoid(self.fc3(x))
+
+def train_pytorch(model_class, X_t, y_t):
+    model = model_class(X_t.shape[1])
+    opt = optim.Adam(model.parameters(), lr=0.001)
+    crit = nn.BCELoss()
+    loader = DataLoader(TensorDataset(torch.FloatTensor(X_t), torch.FloatTensor(y_t).view(-1,1)), batch_size=64, shuffle=True)
+    
+    for epoch in range(20): # Epoch sayısı
+        for xb, yb in loader:
+            opt.zero_grad()
+            crit(model(xb), yb).backward()
+            opt.step()
+    return model
+
+# 3. MODELLERİN HAZIRLANMASI
+models = {
+    "Logistic Reg (Base)": LogisticRegression(max_iter=1000),
+    "Decision Tree (Base)": DecisionTreeClassifier(max_depth=10),
+    "XGBoost (Advanced)": XGBClassifier(n_estimators=100, eval_metric='logloss'), # En iyi model adayı
+    "AdaBoost (Advanced)": AdaBoostClassifier()
+}
+
+results = []
+plt.figure(figsize=(10, 8))
+
+# Klasik ve Gelişmiş ML Modelleri
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    
+    results.append([name, accuracy_score(y_test, y_pred), precision_score(y_test, y_pred), 
+                    recall_score(y_test, y_pred), f1_score(y_test, y_pred), roc_auc_score(y_test, y_prob)])
+    
+    fpr, tpr, _ = roc_curve(y_test, y_prob)
+    plt.plot(fpr, tpr, label=f"{name} (AUC={roc_auc_score(y_test, y_prob):.2f})")
+
+# PyTorch Modelleri
+for i, m_class in enumerate([SimpleDNN, ResidualDNN], 1):
+    m = train_pytorch(m_class, X_train, y_train)
+    m.eval()
+    with torch.no_grad():
+        y_prob = m(torch.FloatTensor(X_test)).numpy()
+        y_pred = (y_prob > 0.5).astype(int)
+    
+    name = f"PyTorch Model {i} (DL)"
+    results.append([name, accuracy_score(y_test, y_pred), precision_score(y_test, y_pred), 
+                    recall_score(y_test, y_pred), f1_score(y_test, y_pred), roc_auc_score(y_test, y_prob)])
+    
+    fpr, tpr, _ = roc_curve(y_test, y_prob)
+    plt.plot(fpr, tpr, label=f"{name} (AUC={roc_auc_score(y_test, y_prob):.2f})")
+
+# 4. SONUÇLARIN YAZDIRILMASI
+
+# TABLO 1: Genel Karşılaştırma
+report_df = pd.DataFrame(results, columns=['Model', 'Accuracy', 'Precision', 'Recall', 'F1', 'AUC'])
+print("\n--- TABLO 1: GENEL MODEL KARŞILAŞTIRMASI ---")
+print(report_df.sort_values(by='AUC', ascending=False))
+
+# TABLO 2: Sınıf Bazlı Kırılım (XGBoost İçin - En iyi model)
+print("\n--- TABLO 2: SINIF BAZLI PERFORMANS (En İyi Model: XGBoost) ---")
+best_model = models["XGBoost (Advanced)"]
+y_pred_best = best_model.predict(X_test)
+print(classification_report(y_test, y_pred_best, target_names=['Flop (0)', 'Hit (1)']))
+
+# ROC Grafiği Ayarları
+plt.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curves - Ali Eren')
+plt.legend(loc="lower right")
+plt.grid(True)
+plt.show()
